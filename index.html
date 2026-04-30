@@ -120,16 +120,19 @@ async function login(){
 }
 
 // ── Match ─────────────────────────────────────────────────────────────────────
-function matchTrack(t) {
+function matchTrack(t, rank=20, total=40) {
   const artist = ((t.artists||[])[0]||{}).name||'';
   const tn = normFn((t.name||'').replace(/\(.*?\)|\[.*?\]|-.*/g,''));
   const an = normFn(artist);
   const ts=tok(tn), as=tok(an);
+  // How high this track is in the user's personal listening (top = 40pts, bottom = 1pt)
+  const rankBonus = Math.round(((total - rank) / total) * 40);
   let best=null;
   for (const k of KARAOKE) {
     const kt=normFn(k.title.replace(/\(.*?\)|\[.*?\]|-.*/g,''));
     const ka=normFn(k.artist);
-    const sc=(kt===tn)*50+(ka===an)*30+over(ts,tok(kt))*8+over(as,tok(ka))*6+((t.popularity||45)/3)+(CLASSIC_SET.has(normFn(k.title))?25:0);
+    const sc=(kt===tn)*50+(ka===an)*30+over(ts,tok(kt))*8+over(as,tok(ka))*6
+             +((t.popularity||45)/3)+(CLASSIC_SET.has(normFn(k.title))?25:0)+rankBonus;
     if (!best||sc>best.score) best={spotify:t,karaoke:k,score:sc,classic:CLASSIC_SET.has(normFn(k.title))};
   }
   return best;
@@ -146,9 +149,19 @@ async function load(){
     const h={Authorization:'Bearer '+token};
     let raw=[];
     if (tab==='yours'){
-      const r=await fetch('https://api.spotify.com/v1/me/top/tracks?limit=40&time_range=medium_term',{headers:h});
-      raw=(await r.json()).items||[];
-      matches=dedup(raw.map(matchTrack).filter(Boolean).sort((a,b)=>b.score-a.score));
+      // Fetch medium-term (6 months) + long-term (all time) for more coverage
+      const [med, lng] = await Promise.all([
+        fetch('https://api.spotify.com/v1/me/top/tracks?limit=49&time_range=medium_term',{headers:h}).then(r=>r.json()),
+        fetch('https://api.spotify.com/v1/me/top/tracks?limit=49&time_range=long_term',{headers:h}).then(r=>r.json())
+      ]);
+      const medTracks = med.items||[];
+      const lngTracks = lng.items||[];
+      // Combine: medium_term tracks ranked 0..N, long_term tracks ranked after (with slight penalty)
+      const seen = new Set();
+      const combined = [];
+      medTracks.forEach((t,i) => { seen.add(t.id); combined.push({t, rank:i, total:medTracks.length}); });
+      lngTracks.forEach((t,i) => { if(!seen.has(t.id)) combined.push({t, rank:i+10, total:lngTracks.length+10}); });
+      matches=dedup(combined.map(({t,rank,total})=>matchTrack(t,rank,total)).filter(Boolean).sort((a,b)=>b.score-a.score));
     } else if (tab==='taste'){
       const ar=await fetch('https://api.spotify.com/v1/me/top/artists?limit=10&time_range=medium_term',{headers:h});
       const artists=(await ar.json()).items||[];
@@ -171,24 +184,19 @@ async function load(){
 
 // ── Render ────────────────────────────────────────────────────────────────────
 const EM=['🎤','🎶','🎵','🎸','🥁','🎹','🎺','🎷'];
-function artEl(m,i){
-  const imgs=m.spotify&&m.spotify.album&&m.spotify.album.images;
-  const em=EM[i%EM.length];
-  if (imgs&&imgs.length){
-    const src=(imgs[1]||imgs[0]).url;
-    return `<img class="art" src="${src}" alt="" loading="lazy"
-      onload="this.previousElementSibling.style.display='none'"
-      onerror="this.style.display='none'"
-    /><div class="art-fb">${em}</div>`;
-  }
-  return `<div class="art-fb">${em}</div>`;
-}
+
 function card(m,i){
   const via=m.spotify?`<div class="via">via ${((m.spotify.artists||[])[0]||{}).name||''}</div>`:'';
   const badge=m.classic?`<span class="badge">🎤 Classic</span>`:'';
   const score=m.score?`<div class="sc">${Math.round(m.score)}</div>`:'';
+  const em=EM[i%EM.length];
   return `<div class="song">
-    <div class="art-wrap">${artEl(m,i)}</div>
+    <div class="art-wrap">
+      <div class="art-fb" id="fb-${i}">${em}</div>
+      <img class="art" id="art-${i}" src="" alt="" style="display:none"
+        onload="this.style.display='block';document.getElementById('fb-${i}').style.display='none'"
+        onerror="this.style.display='none'"/>
+    </div>
     <div class="info">
       <div class="t">${m.karaoke.title}</div>
       <div class="a">${m.karaoke.artist}</div>
@@ -197,7 +205,28 @@ function card(m,i){
     ${score}
   </div>`;
 }
-function render(list){document.getElementById('results').innerHTML=list.map((m,i)=>card(m,i)).join('');}
+
+async function fetchArt(title, artist, index) {
+  if (!token) return;
+  try {
+    const q = encodeURIComponent(`${title} ${artist}`);
+    const r = await fetch(`https://api.spotify.com/v1/search?type=track&limit=1&q=${q}`, {
+      headers: { Authorization: 'Bearer ' + token }
+    });
+    const d = await r.json();
+    const imgs = d.tracks && d.tracks.items && d.tracks.items[0] && d.tracks.items[0].album && d.tracks.items[0].album.images;
+    if (imgs && imgs.length) {
+      const img = document.getElementById('art-' + index);
+      if (img) img.src = (imgs[1] || imgs[0]).url;
+    }
+  } catch(e) {}
+}
+
+function render(list) {
+  document.getElementById('results').innerHTML = list.map((m,i) => card(m,i)).join('');
+  // Fetch original art for each card asynchronously
+  list.forEach((m, i) => fetchArt(m.karaoke.title, m.karaoke.artist, i));
+}
 function renderFallback(){
   matches=CLASSICS.map(k=>{return{spotify:null,karaoke:k,score:null,classic:true};});
   const shown=[...matches].sort(()=>Math.random()-.5).slice(0,LIMIT);
