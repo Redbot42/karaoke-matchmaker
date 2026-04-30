@@ -139,87 +139,70 @@ function matchTrack(t, rank=20, total=40) {
 }
 function dedup(arr){const s=new Map();for(const m of arr){const k=normFn((m.karaoke.artist||'')+(m.karaoke.title||''));if(!s.has(k))s.set(k,m);}return[...s.values()];}
 
-// ── Fetch ALL user tracks and build a lookup table ────────────────────────────
-async function buildLibrary(h, onProgress) {
-  // lookup: normKey -> {weight, spotify track}
-  const lib = new Map();
+// ── Fetch all user tracks from every source ───────────────────────────────────
+async function fetchAllUserTracks(h) {
+  const seen = new Map(); // id -> {t, rank, weight}
 
-  async function fetchAll(url, extract, weight) {
-    let next = url, count = 0;
-    while (next) {
+  function addTracks(tracks, weight) {
+    tracks.forEach((t, i) => {
+      if (!t || !t.id) return;
+      const existing = seen.get(t.id);
+      const rank = i;
+      if (!existing || weight > existing.weight) {
+        seen.set(t.id, { t, rank, weight });
+      }
+    });
+  }
+
+  async function fetchPaged(url, key, limit=50, pages=1) {
+    const results = [];
+    let next = url + (url.includes('?') ? '&' : '?') + `limit=${limit}`;
+    for (let p=0; p<pages && next; p++) {
       try {
         const r = await fetch(next, {headers:h});
         const d = await r.json();
-        const items = (d.items || []).map(extract).filter(Boolean);
-        items.forEach(t => {
-          if (!t.name) return;
-          const artist = ((t.artists||[])[0]||{}).name||'';
-          const key = normFn(t.name) + '|' + normFn(artist);
-          const existing = lib.get(key);
-          if (!existing || weight > existing.weight)
-            lib.set(key, {weight, spotify:t});
-        });
-        count += items.length;
+        const items = d[key] || d.items || [];
+        results.push(...items);
         next = d.next || null;
-        if (onProgress) onProgress(count);
       } catch(e) { break; }
     }
+    return results;
   }
 
-  // All sources in parallel where possible
-  const [playlists] = await Promise.all([
-    fetch('https://api.spotify.com/v1/me/playlists?limit=50', {headers:h})
-      .then(r=>r.json()).then(d=>d.items||[]).catch(()=>[]),
-    // Top tracks (capped at 50 each)
-    fetchAll('https://api.spotify.com/v1/me/top/tracks?time_range=short_term&limit=50',  t=>t, 100),
-    fetchAll('https://api.spotify.com/v1/me/top/tracks?time_range=medium_term&limit=50', t=>t, 85),
-    fetchAll('https://api.spotify.com/v1/me/top/tracks?time_range=long_term&limit=50',   t=>t, 70),
-    // Recently played
-    fetchAll('https://api.spotify.com/v1/me/player/recently-played?limit=50', x=>x.track, 80),
-    // ALL liked songs (full pagination, no limit)
-    fetchAll('https://api.spotify.com/v1/me/tracks?limit=50', x=>x.track, 60),
-    // Saved albums
-    fetchAll('https://api.spotify.com/v1/me/albums?limit=50', x=>x, 40).catch(()=>{}),
+  // Run all fetches in parallel
+  const [medTop, lngTop, shortTop, recent, liked, playlists] = await Promise.all([
+    fetchPaged('https://api.spotify.com/v1/me/top/tracks?time_range=medium_term', 'items', 50, 1),
+    fetchPaged('https://api.spotify.com/v1/me/top/tracks?time_range=long_term',   'items', 50, 1),
+    fetchPaged('https://api.spotify.com/v1/me/top/tracks?time_range=short_term',  'items', 50, 1),
+    fetchPaged('https://api.spotify.com/v1/me/player/recently-played', 'items', 50, 1),
+    fetchPaged('https://api.spotify.com/v1/me/tracks', 'items', 50, 10), // up to 500 liked songs
+    fetchPaged('https://api.spotify.com/v1/me/playlists', 'items', 50, 2).catch(()=>[]),
   ]);
 
-  // All playlist tracks (full pagination per playlist)
-  await Promise.all(
-    playlists.map(p =>
-      fetchAll(`https://api.spotify.com/v1/playlists/${p.id}/tracks?limit=50`, x=>x.track, 45).catch(()=>{})
+  // Short-term (last 4 weeks) = highest personal weight
+  addTracks(shortTop, 100);
+  // Medium-term (6 months)
+  addTracks(medTop, 80);
+  // Long-term (all time)
+  addTracks(lngTop, 60);
+  // Recently played
+  addTracks(recent.map(x=>x.track).filter(Boolean), 70);
+  // Liked songs
+  addTracks(liked.map(x=>x.track).filter(Boolean), 50);
+
+  // Fetch tracks from user's top 5 playlists (owned or followed)
+  const ownedPlaylists = playlists.slice(0, 5);
+  const playlistTracks = await Promise.all(
+    ownedPlaylists.map(p =>
+      fetchPaged(`https://api.spotify.com/v1/playlists/${p.id}/tracks`, 'items', 50, 2)
+        .then(items => items.map(x=>x.track).filter(Boolean))
+        .catch(()=>[])
     )
   );
+  playlistTracks.forEach(tracks => addTracks(tracks, 40));
 
-  return lib;
-}
-
-// ── Reverse match: find karaoke songs in the user's library ───────────────────
-function reverseMatch(lib) {
-  const results = [];
-  for (const k of KARAOKE) {
-    const key  = normFn(k.title) + '|' + normFn(k.artist);
-    // Also try just title in case artist name differs slightly
-    let entry = lib.get(key);
-    if (!entry) {
-      // fuzzy: check if any lib key starts with same norm title
-      for (const [lk, lv] of lib) {
-        const [lt, la] = lk.split('|');
-        const kt = normFn(k.title.replace(/\(.*?\)|\[.*?\]|-.*/g,''));
-        const ka = normFn(k.artist);
-        const titleMatch = lt === normFn(k.title) || lt === kt;
-        const artistMatch = la === ka || over(tok(la), tok(ka)) > 0;
-        if (titleMatch && artistMatch) { entry = lv; break; }
-      }
-    }
-    if (entry) {
-      results.push({
-        spotify: entry.spotify,
-        karaoke: k,
-        score: entry.weight + (CLASSIC_SET.has(normFn(k.title)) ? 25 : 0),
-        classic: CLASSIC_SET.has(normFn(k.title))
-      });
-    }
-  }
-  return results.sort((a,b) => b.score - a.score);
+  // Return sorted by weight desc, then rank asc
+  return [...seen.values()].sort((a,b) => b.weight-a.weight || a.rank-b.rank);
 }
 
 // ── Load ──────────────────────────────────────────────────────────────────────
@@ -232,11 +215,12 @@ async function load(){
     const h={Authorization:'Bearer '+token};
     let raw=[];
     if (tab==='yours'){
-      document.getElementById('results').innerHTML='<div class="empty">Scanning your library…</div>';
-      const lib = await buildLibrary(h, count => {
-        document.getElementById('results').innerHTML=`<div class="empty">Scanning library… ${count} tracks found</div>`;
-      });
-      matches = dedup(reverseMatch(lib));
+      document.getElementById('results').innerHTML='<div class="empty">Loading your library…</div>';
+      const allTracks = await fetchAllUserTracks(h);
+      const total = allTracks.length;
+      matches = dedup(
+        allTracks.map(({t,rank}) => matchTrack(t, rank, total)).filter(Boolean).sort((a,b)=>b.score-a.score)
+      );
     } else if (tab==='taste'){
       const ar=await fetch('https://api.spotify.com/v1/me/top/artists?limit=10&time_range=medium_term',{headers:h});
       const artists=(await ar.json()).items||[];
