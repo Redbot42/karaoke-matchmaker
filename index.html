@@ -115,7 +115,7 @@ async function login(){
   u.searchParams.set('client_id',CLIENT_ID); u.searchParams.set('response_type','code');
   u.searchParams.set('redirect_uri',REDIR); u.searchParams.set('code_challenge_method','S256');
   u.searchParams.set('code_challenge',await chal(v));
-  u.searchParams.set('scope','user-top-read user-read-recently-played');
+  u.searchParams.set('scope','user-top-read user-read-recently-played user-library-read playlist-read-private playlist-read-collaborative');
   location.href=u;
 }
 
@@ -139,6 +139,72 @@ function matchTrack(t, rank=20, total=40) {
 }
 function dedup(arr){const s=new Map();for(const m of arr){const k=normFn((m.karaoke.artist||'')+(m.karaoke.title||''));if(!s.has(k))s.set(k,m);}return[...s.values()];}
 
+// ── Fetch all user tracks from every source ───────────────────────────────────
+async function fetchAllUserTracks(h) {
+  const seen = new Map(); // id -> {t, rank, weight}
+
+  function addTracks(tracks, weight) {
+    tracks.forEach((t, i) => {
+      if (!t || !t.id) return;
+      const existing = seen.get(t.id);
+      const rank = i;
+      if (!existing || weight > existing.weight) {
+        seen.set(t.id, { t, rank, weight });
+      }
+    });
+  }
+
+  async function fetchPaged(url, key, limit=50, pages=1) {
+    const results = [];
+    let next = url + (url.includes('?') ? '&' : '?') + `limit=${limit}`;
+    for (let p=0; p<pages && next; p++) {
+      try {
+        const r = await fetch(next, {headers:h});
+        const d = await r.json();
+        const items = d[key] || d.items || [];
+        results.push(...items);
+        next = d.next || null;
+      } catch(e) { break; }
+    }
+    return results;
+  }
+
+  // Run all fetches in parallel
+  const [medTop, lngTop, shortTop, recent, liked, playlists] = await Promise.all([
+    fetchPaged('https://api.spotify.com/v1/me/top/tracks?time_range=medium_term', 'items', 50, 1),
+    fetchPaged('https://api.spotify.com/v1/me/top/tracks?time_range=long_term',   'items', 50, 1),
+    fetchPaged('https://api.spotify.com/v1/me/top/tracks?time_range=short_term',  'items', 50, 1),
+    fetchPaged('https://api.spotify.com/v1/me/player/recently-played', 'items', 50, 1),
+    fetchPaged('https://api.spotify.com/v1/me/tracks', 'items', 50, 10), // up to 500 liked songs
+    fetchPaged('https://api.spotify.com/v1/me/playlists', 'items', 50, 2).catch(()=>[]),
+  ]);
+
+  // Short-term (last 4 weeks) = highest personal weight
+  addTracks(shortTop, 100);
+  // Medium-term (6 months)
+  addTracks(medTop, 80);
+  // Long-term (all time)
+  addTracks(lngTop, 60);
+  // Recently played
+  addTracks(recent.map(x=>x.track).filter(Boolean), 70);
+  // Liked songs
+  addTracks(liked.map(x=>x.track).filter(Boolean), 50);
+
+  // Fetch tracks from user's top 5 playlists (owned or followed)
+  const ownedPlaylists = playlists.slice(0, 5);
+  const playlistTracks = await Promise.all(
+    ownedPlaylists.map(p =>
+      fetchPaged(`https://api.spotify.com/v1/playlists/${p.id}/tracks`, 'items', 50, 2)
+        .then(items => items.map(x=>x.track).filter(Boolean))
+        .catch(()=>[])
+    )
+  );
+  playlistTracks.forEach(tracks => addTracks(tracks, 40));
+
+  // Return sorted by weight desc, then rank asc
+  return [...seen.values()].sort((a,b) => b.weight-a.weight || a.rank-b.rank);
+}
+
 // ── Load ──────────────────────────────────────────────────────────────────────
 async function load(){
   if (tab==='classics'){renderClassics();return;}
@@ -149,19 +215,12 @@ async function load(){
     const h={Authorization:'Bearer '+token};
     let raw=[];
     if (tab==='yours'){
-      // Fetch medium-term (6 months) + long-term (all time) for more coverage
-      const [med, lng] = await Promise.all([
-        fetch('https://api.spotify.com/v1/me/top/tracks?limit=49&time_range=medium_term',{headers:h}).then(r=>r.json()),
-        fetch('https://api.spotify.com/v1/me/top/tracks?limit=49&time_range=long_term',{headers:h}).then(r=>r.json())
-      ]);
-      const medTracks = med.items||[];
-      const lngTracks = lng.items||[];
-      // Combine: medium_term tracks ranked 0..N, long_term tracks ranked after (with slight penalty)
-      const seen = new Set();
-      const combined = [];
-      medTracks.forEach((t,i) => { seen.add(t.id); combined.push({t, rank:i, total:medTracks.length}); });
-      lngTracks.forEach((t,i) => { if(!seen.has(t.id)) combined.push({t, rank:i+10, total:lngTracks.length+10}); });
-      matches=dedup(combined.map(({t,rank,total})=>matchTrack(t,rank,total)).filter(Boolean).sort((a,b)=>b.score-a.score));
+      document.getElementById('results').innerHTML='<div class="empty">Loading your library…</div>';
+      const allTracks = await fetchAllUserTracks(h);
+      const total = allTracks.length;
+      matches = dedup(
+        allTracks.map(({t,rank}) => matchTrack(t, rank, total)).filter(Boolean).sort((a,b)=>b.score-a.score)
+      );
     } else if (tab==='taste'){
       const ar=await fetch('https://api.spotify.com/v1/me/top/artists?limit=10&time_range=medium_term',{headers:h});
       const artists=(await ar.json()).items||[];
