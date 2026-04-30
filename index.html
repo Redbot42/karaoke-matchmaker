@@ -6,7 +6,7 @@
 <title>Karaoke Matchmaker</title>
 <style>
 *{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
-:root{--bg:#0e0e0f;--card:#18181a;--border:#2a2a2d;--text:#e8e6e1;--muted:#777;--accent:#1db954;--accent2:#158a3e}
+:root{--bg:#0e0e0f;--card:#18181a;--border:#2a2a2d;--text:#e8e6e1;--muted:#777;--accent:#1db954;--accent2:#158a3e;--gold:#f5a623}
 body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;min-height:100vh;display:flex;flex-direction:column}
 header{padding:14px 16px;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid var(--border);position:sticky;top:0;background:var(--bg);z-index:10;gap:12px}
 .logo{font-size:1.05rem;font-weight:700;white-space:nowrap}.logo span{color:var(--accent)}
@@ -19,7 +19,9 @@ header{padding:14px 16px;display:flex;align-items:center;justify-content:space-b
 #q{min-width:140px;flex:1;background:var(--card);border:1px solid var(--border);border-radius:999px;padding:7px 15px;color:var(--text);font-size:.82rem;outline:none;display:none}
 #q:focus{border-color:var(--accent)}
 main{flex:1;padding:12px 16px;display:grid;gap:10px;align-content:start}
+.section-label{font-size:.75rem;color:var(--muted);letter-spacing:.08em;text-transform:uppercase;padding:4px 0;grid-column:1/-1}
 .song{background:var(--card);border:1px solid var(--border);border-radius:16px;display:flex;align-items:center;gap:12px;padding:10px 14px;animation:fi .2s ease}
+.song.classic{border-color:#2a3a2a}
 @keyframes fi{from{opacity:0;transform:translateY(5px)}to{opacity:1;transform:none}}
 .art{width:56px;height:56px;border-radius:10px;object-fit:cover;flex-shrink:0;background:linear-gradient(135deg,var(--accent2),var(--accent))}
 .art.fallback{display:flex;align-items:center;justify-content:center;font-size:1.4rem}
@@ -27,6 +29,9 @@ main{flex:1;padding:12px 16px;display:grid;gap:10px;align-content:start}
 .t{font-weight:600;font-size:.93rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .a{font-size:.8rem;color:var(--muted);margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .sp{font-size:.75rem;color:var(--muted);margin-top:3px}
+.badge{display:inline-block;font-size:.68rem;padding:2px 7px;border-radius:999px;margin-top:4px;font-weight:600}
+.badge.classic{background:#1a2e1a;color:var(--accent)}
+.badge.suggested{background:#2a2515;color:var(--gold)}
 .sc{font-size:.78rem;color:var(--accent);font-weight:700;flex-shrink:0;align-self:flex-start;padding-top:2px}
 footer{padding:12px 16px;border-top:1px solid var(--border);display:flex;justify-content:center;position:sticky;bottom:0;background:var(--bg)}
 #shuf{background:var(--card);border:1px solid var(--border);color:var(--text);border-radius:999px;padding:11px 36px;font-size:.9rem;cursor:pointer;width:100%;max-width:320px}
@@ -56,25 +61,24 @@ footer{padding:12px 16px;border-top:1px solid var(--border);display:flex;justify
 
 <script>
 const CLIENT_ID = 'cfc478599c144a4887b366ecf774362b';
-// Auto-detects the current URL so it works on any host (GitHub Pages, local, etc.)
-const REDIR = location.origin + location.pathname.replace(/\/$/, '');
-const LIMIT = 5;
+const REDIR     = location.origin + location.pathname;
+const LIMIT     = 5;
+const CLASSICS  = new Set(["9 to 5", "africa", "all that she wants", "american pie", "angels", "baby one more time", "bad romance", "beat it", "billie jean", "blurred lines", "bohemian rhapsody", "boogie wonderland", "born this way", "born to run", "call me maybe", "cant stop the feeling", "come as you are", "come on eileen", "crazy in love", "creep", "dancing queen", "dont stop believin", "dont stop me now", "dont you forget about me", "eye of the tiger", "faith", "get lucky", "gimme gimme gimme", "girls just wanna have fun", "halo", "happy", "hello", "hotel california", "i will always love you", "i will survive", "irreplaceable", "islands in the stream", "jolene", "jump", "just dance", "killing me softly", "knowing me knowing you", "lets groove", "livin on a prayer", "losing my religion", "love shack", "love story", "mamma mia", "man in the mirror", "mr brightside", "no scrubs", "party in the usa", "piano man", "poker face", "pumped up kicks", "rehab", "rocket man", "rolling in the deep", "roxanne", "september", "shake it off", "since u been gone", "single ladies", "smells like teen spirit", "somebody that i used to know", "someone like you", "summer of 69", "super trouper", "sweet caroline", "sweet home alabama", "take me home country roads", "take on me", "teenage dream", "the sign", "the way you make me feel", "thrift shop", "thriller", "thunder road", "tik tok", "tiny dancer", "total eclipse of the heart", "toxic", "under pressure", "uptown funk", "valerie", "voulez vous", "wannabe", "waterfalls", "waterloo", "we are never ever getting back together", "we are the champions", "we will rock you", "wonderwall", "you belong with me", "your song"]);
+const FALLBACKS = [{"artist": "Queen", "title": "Bohemian Rhapsody"}, {"artist": "Abba", "title": "Dancing Queen"}, {"artist": "Journey", "title": "Dont Stop Believin"}, {"artist": "Bon Jovi", "title": "Livin On A Prayer"}, {"artist": "Bonnie Tyler", "title": "Total Eclipse Of The Heart"}, {"artist": "Gloria Gaynor", "title": "I Will Survive"}, {"artist": "A Ha", "title": "Take On Me"}, {"artist": "Neil Diamond", "title": "Sweet Caroline"}, {"artist": "Billy Joel", "title": "Piano Man"}, {"artist": "Eagles", "title": "Hotel California"}, {"artist": "Killers", "title": "Mr Brightside"}, {"artist": "Oasis", "title": "Wonderwall"}, {"artist": "Michael Jackson", "title": "Billie Jean"}, {"artist": "Cyndi Lauper", "title": "Girls Just Wanna Have Fun"}, {"artist": "Queen", "title": "Don'T Stop Me Now"}, {"artist": "Elton John", "title": "Your Song"}, {"artist": "Toto", "title": "Africa"}, {"artist": "Bryan Adams", "title": "Summer Of 69"}, {"artist": "B52S", "title": "Love Shack"}, {"artist": "Dexys Midnight Runners", "title": "Come On Eileen"}];
 
 let token = null, karaoke = [], matches = [], mode = 'top';
 
 fetch('karaoke.json').then(r=>r.json()).then(d=>{ karaoke = d; });
 
-// ── Handle Spotify redirect back to this page ─────────────────────────────────
+// ── Handle redirect ───────────────────────────────────────────────────────────
 (async () => {
-  const params = new URLSearchParams(location.search);
-  const code = params.get('code');
+  const code = new URLSearchParams(location.search).get('code');
   if (!code) return;
   history.replaceState({}, '', location.pathname);
   const verifier = sessionStorage.getItem('verifier');
   if (!verifier) return;
   const r = await fetch('https://accounts.spotify.com/api/token', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'},
     body: new URLSearchParams({ client_id:CLIENT_ID, grant_type:'authorization_code', code, redirect_uri:REDIR, code_verifier:verifier })
   });
   const d = await r.json();
@@ -112,6 +116,10 @@ const norm = s => (s||'').toLowerCase().normalize('NFKD').replace(/[\u0300-\u036
 const tok  = s => new Set(norm(s).split(' ').filter(Boolean));
 const over = (a,b) => { let n=0; a.forEach(v=>b.has(v)&&n++); return n; };
 
+function isClassic(title) {
+  return CLASSICS.has(norm(title));
+}
+
 function matchTrack(t) {
   const artist = ((t.artists||[])[0]||{}).name||'';
   const tn = norm((t.name||'').replace(/\(.*?\)|\[.*?\]|-.*/g,''));
@@ -121,9 +129,11 @@ function matchTrack(t) {
   for (const k of karaoke) {
     const kt = norm(k.title.replace(/\(.*?\)|\[.*?\]|-.*/g,''));
     const ka = norm(k.artist);
-    const sc = (kt===tn)*50 + (ka===an)*30 + over(ts,tok(kt))*8 + over(as,tok(ka))*6 + ((t.popularity||45)/3);
-    if (sc >= 20 && (!best || sc > best.score))
-      best = { spotify:t, karaoke:k, score:sc };
+    const classicBonus = isClassic(k.title) ? 25 : 0;
+    const sc = (kt===tn)*50 + (ka===an)*30 + over(ts,tok(kt))*8 + over(as,tok(ka))*6
+             + ((t.popularity||45)/3) + classicBonus;
+    if (!best || sc > best.score)
+      best = { spotify:t, karaoke:k, score:sc, classic:isClassic(k.title) };
   }
   return best;
 }
@@ -159,7 +169,11 @@ async function buildMatches() {
     const seen = new Map();
     for (const m of raw) { const k=norm(m.karaoke.artist+m.karaoke.title); if(!seen.has(k)) seen.set(k,m); }
     matches = [...seen.values()];
-    render(matches.slice(0, LIMIT));
+    if (matches.length === 0) {
+      renderFallback();
+    } else {
+      render(matches.slice(0, LIMIT));
+    }
   } catch(e) {
     document.getElementById('results').innerHTML='<div class="empty">Error fetching tracks.</div>';
   }
@@ -167,29 +181,47 @@ async function buildMatches() {
 
 const EM = ['🎤','🎶','🎵','🎸','🥁','🎹','🎺','🎷'];
 function artEl(m, i) {
-  const imgs = m.spotify.album && m.spotify.album.images;
+  const imgs = m && m.spotify && m.spotify.album && m.spotify.album.images;
   if (imgs && imgs.length) {
     const src = (imgs[1]||imgs[0]).url;
-    return `<img class="art" src="${src}" alt="" loading="lazy" onerror="this.outerHTML='<div class=\\'art fallback\\'>${EM[i%EM.length]}</div>'"/>`;
+    return `<img class="art" src="${src}" alt="" loading="lazy" onerror="this.outerHTML='<div class=\'art fallback\'>${EM[i%EM.length]}</div>'"/>`;
   }
   return `<div class="art fallback">${EM[i%EM.length]}</div>`;
 }
+
+function songCard(m, i, suggested=false) {
+  const badge = suggested
+    ? `<span class="badge suggested">⭐ Crowd favourite</span>`
+    : m.classic ? `<span class="badge classic">🎤 Karaoke classic</span>` : '';
+  return `<div class="song${m.classic||suggested?' classic':''}">
+    ${artEl(m, i)}
+    <div class="info">
+      <div class="t">${m.karaoke.title}</div>
+      <div class="a">${m.karaoke.artist}</div>
+      ${m.spotify ? `<div class="sp">via ${((m.spotify.artists||[])[0]||{}).name||''}</div>` : ''}
+      ${badge}
+    </div>
+    ${m.score ? `<div class="sc">${Math.round(m.score)}</div>` : ''}
+  </div>`;
+}
+
 function render(list) {
-  if (!list.length) { document.getElementById('results').innerHTML='<div class="empty">No matches found.<br>Try a different mode.</div>'; return; }
-  document.getElementById('results').innerHTML = list.map((m,i) => `
-    <div class="song">
-      ${artEl(m,i)}
-      <div class="info">
-        <div class="t">${m.karaoke.title}</div>
-        <div class="a">${m.karaoke.artist}</div>
-        <div class="sp">via ${((m.spotify.artists||[])[0]||{}).name||''}</div>
-      </div>
-      <div class="sc">${Math.round(m.score)}</div>
-    </div>`).join('');
+  if (!list.length) { renderFallback(); return; }
+  document.getElementById('results').innerHTML = list.map((m,i) => songCard(m,i)).join('');
+}
+
+function renderFallback() {
+  const shuffled = [...FALLBACKS].sort(()=>Math.random()-.5).slice(0, LIMIT);
+  const cards = shuffled.map((k,i) => songCard({karaoke:k, spotify:null, score:null, classic:true}, i, true)).join('');
+  document.getElementById('results').innerHTML =
+    `<div class="section-label">No matches found — here are some crowd favourites</div>${cards}`;
 }
 
 document.getElementById('loginBtn').onclick = login;
-document.getElementById('shuf').onclick = () => render([...matches].sort(()=>Math.random()-.5).slice(0, LIMIT));
+document.getElementById('shuf').onclick = () => {
+  if (matches.length) render([...matches].sort(()=>Math.random()-.5).slice(0, LIMIT));
+  else renderFallback();
+};
 document.querySelectorAll('.mode').forEach(b => b.onclick = () => {
   document.querySelectorAll('.mode').forEach(x=>x.classList.remove('on'));
   b.classList.add('on'); mode = b.dataset.m;
