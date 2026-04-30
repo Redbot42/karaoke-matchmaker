@@ -232,11 +232,86 @@ async function load(){
     const h={Authorization:'Bearer '+token};
     let raw=[];
     if (tab==='yours'){
-      document.getElementById('results').innerHTML='<div class="empty">Scanning your library…</div>';
-      const lib = await buildLibrary(h, count => {
-        document.getElementById('results').innerHTML=`<div class="empty">Scanning library… ${count} tracks found</div>`;
-      });
-      matches = dedup(reverseMatch(lib));
+      document.getElementById('results').innerHTML='<div class="empty">Loading…</div>';
+
+      // ── Phase 1: fast sources (~200 tracks), show results immediately ──────
+      const lib = new Map();
+
+      async function fetchAllIntoLib(url, extract, weight) {
+        let next = url;
+        while (next) {
+          try {
+            const r = await fetch(next, {headers:h});
+            const d = await r.json();
+            (d.items||[]).forEach(item => {
+              const t = extract(item);
+              if (!t||!t.name) return;
+              const artist = ((t.artists||[])[0]||{}).name||'';
+              const key = normFn(t.name)+'|'+normFn(artist);
+              const ex = lib.get(key);
+              if (!ex||weight>ex.weight) lib.set(key,{weight,spotify:t});
+            });
+            next = d.next||null;
+          } catch(e){break;}
+        }
+      }
+
+      function showCurrent(label) {
+        matches = dedup(reverseMatch(lib));
+        if (matches.length) {
+          render(matches.slice(0, LIMIT));
+          // show subtle background loading indicator
+          const note = document.createElement('div');
+          note.id = 'bg-note';
+          note.style.cssText = 'text-align:center;font-size:.75rem;color:var(--muted);padding:8px 0';
+          note.textContent = label;
+          const existing = document.getElementById('bg-note');
+          if (existing) existing.replaceWith(note);
+          else document.getElementById('results').appendChild(note);
+        } else {
+          document.getElementById('results').innerHTML=`<div class="empty">${label}</div>`;
+        }
+      }
+
+      // Phase 1: top tracks + recently played (fast, parallel)
+      await Promise.all([
+        fetchAllIntoLib('https://api.spotify.com/v1/me/top/tracks?time_range=short_term&limit=50',  t=>t, 100),
+        fetchAllIntoLib('https://api.spotify.com/v1/me/top/tracks?time_range=medium_term&limit=50', t=>t, 85),
+        fetchAllIntoLib('https://api.spotify.com/v1/me/top/tracks?time_range=long_term&limit=50',   t=>t, 70),
+        fetchAllIntoLib('https://api.spotify.com/v1/me/player/recently-played?limit=50', x=>x.track, 80),
+      ]);
+      showCurrent('Scanning liked songs & playlists…');
+
+      // ── Phase 2: deep library scan in background ──────────────────────────
+      (async () => {
+        // Liked songs (full pagination)
+        await fetchAllIntoLib('https://api.spotify.com/v1/me/tracks?limit=50', x=>x.track, 60);
+        showCurrent('Scanning playlists…');
+
+        // All playlists
+        try {
+          let next = 'https://api.spotify.com/v1/me/playlists?limit=50';
+          const playlists = [];
+          while (next) {
+            const r = await fetch(next, {headers:h});
+            const d = await r.json();
+            playlists.push(...(d.items||[]));
+            next = d.next||null;
+          }
+          await Promise.all(
+            playlists.map(p =>
+              fetchAllIntoLib(`https://api.spotify.com/v1/playlists/${p.id}/tracks?limit=50`, x=>x.track, 45).catch(()=>{})
+            )
+          );
+        } catch(e) {}
+
+        // Saved albums
+        await fetchAllIntoLib('https://api.spotify.com/v1/me/albums?limit=50', x=>x.album, 40).catch(()=>{});
+
+        showCurrent('');
+        const note = document.getElementById('bg-note');
+        if (note) note.remove();
+      })();
     } else if (tab==='taste'){
       const ar=await fetch('https://api.spotify.com/v1/me/top/artists?limit=10&time_range=medium_term',{headers:h});
       const artists=(await ar.json()).items||[];
