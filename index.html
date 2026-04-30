@@ -215,12 +215,61 @@ async function load(){
     const h={Authorization:'Bearer '+token};
     let raw=[];
     if (tab==='yours'){
-      document.getElementById('results').innerHTML='<div class="empty">Loading your library…</div>';
-      const allTracks = await fetchAllUserTracks(h);
-      const total = allTracks.length;
-      matches = dedup(
-        allTracks.map(({t,rank}) => matchTrack(t, rank, total)).filter(Boolean).sort((a,b)=>b.score-a.score)
-      );
+      document.getElementById('results').innerHTML='<div class="empty">Loading…</div>';
+
+      // ── Phase 1: top tracks + recently played (fast, ~200 tracks) ──────────
+      const [s,m,l,rec] = await Promise.all([
+        fetch('https://api.spotify.com/v1/me/top/tracks?time_range=short_term&limit=50',{headers:h}).then(r=>r.json()).catch(()=>({})),
+        fetch('https://api.spotify.com/v1/me/top/tracks?time_range=medium_term&limit=50',{headers:h}).then(r=>r.json()).catch(()=>({})),
+        fetch('https://api.spotify.com/v1/me/top/tracks?time_range=long_term&limit=50',{headers:h}).then(r=>r.json()).catch(()=>({})),
+        fetch('https://api.spotify.com/v1/me/player/recently-played?limit=50',{headers:h}).then(r=>r.json()).catch(()=>({})),
+      ]);
+      const phase1 = [];
+      (s.items||[]).forEach((t,i)=>phase1.push({t,rank:i,total:50,w:100}));
+      (m.items||[]).forEach((t,i)=>phase1.push({t,rank:i,total:50,w:85}));
+      (l.items||[]).forEach((t,i)=>phase1.push({t,rank:i,total:50,w:70}));
+      (rec.items||[]).map(x=>x.track).filter(Boolean).forEach((t,i)=>phase1.push({t,rank:i,total:50,w:80}));
+
+      const seen1=new Map();
+      phase1.forEach(({t,rank,total,w})=>{ if(!seen1.has(t.id)||w>seen1.get(t.id).w) seen1.set(t.id,{t,rank,total:phase1.length,w}); });
+      const p1arr=[...seen1.values()];
+      matches=dedup(p1arr.map(({t,rank,total})=>matchTrack(t,rank,total)).filter(Boolean).sort((a,b)=>b.score-a.score));
+      if(matches.length) render(matches.slice(0,LIMIT));
+      else document.getElementById('results').innerHTML='<div class="empty">Scanning liked songs & playlists…</div>';
+
+      // ── Phase 2: full library scan in background ────────────────────────────
+      (async()=>{
+        const h2={Authorization:'Bearer '+token};
+        async function fetchPaged2(url,extract,weight,onDone){
+          let next=url; const out=[];
+          while(next){try{const r=await fetch(next,{headers:h2});const d=await r.json();(d.items||[]).forEach(x=>{const t=extract(x);if(t&&t.id)out.push(t);});next=d.next||null;}catch(e){break;}}
+          if(onDone) onDone(out,weight);
+          return out;
+        }
+        function mergeTracks(tracks,weight){
+          const total2=tracks.length;
+          tracks.forEach((t,rank)=>{if(!seen1.has(t.id)||weight>seen1.get(t.id).w) seen1.set(t.id,{t,rank,total:total2,w:weight});});
+        }
+        function refresh(hint){
+          const arr=[...seen1.values()];
+          matches=dedup(arr.map(({t,rank,total})=>matchTrack(t,rank,total)).filter(Boolean).sort((a,b)=>b.score-a.score));
+          if(matches.length){
+            render(matches.slice(0,LIMIT));
+            if(hint){const n=document.createElement('div');n.style.cssText='text-align:center;font-size:.75rem;color:var(--muted);padding:6px 0';n.textContent=hint;document.getElementById('results').appendChild(n);}
+          }
+        }
+        // Liked songs
+        const liked=await fetchPaged2('https://api.spotify.com/v1/me/tracks?limit=50',x=>x.track,60);
+        mergeTracks(liked,60); refresh('Scanning playlists…');
+        // Playlists
+        try{
+          const plR=await fetch('https://api.spotify.com/v1/me/playlists?limit=50',{headers:h2});
+          const plData=await plR.json();
+          const pls=plData.items||[];
+          await Promise.all(pls.map(p=>fetchPaged2(`https://api.spotify.com/v1/playlists/${p.id}/tracks?limit=50`,x=>x.track,45).then(tr=>mergeTracks(tr,45)).catch(()=>{})));
+        }catch(e){}
+        refresh('');
+      })();
     } else if (tab==='taste'){
       const ar=await fetch('https://api.spotify.com/v1/me/top/artists?limit=10&time_range=medium_term',{headers:h});
       const artists=(await ar.json()).items||[];
